@@ -1,1 +1,174 @@
+--This SQL code takes you on an exciting journey as it dives into the cruise performance of a leading company in the industry, XYZ. 
+--Join me in exploring the data and uncovering insights that can enhance our understanding of cruising dynamics.
 
+-- Q1 Total Revenue per ship
+
+-- Total booking revenue 
+WITH booking_total AS (
+	SELECT 
+		c.ship_name,
+        SUM(cb.total_price) AS total_booking_revenue
+	FROM cruise_bookings cb
+    JOIN cruises c ON c.cruise_id = cb.cruise_id
+    GROUP BY c.ship_name),
+    
+-- Total onboard spend    
+spending_total AS (
+	SELECT 
+		c.ship_name,
+        SUM(sb.amount) AS total_onboard_spend
+    FROM onboard_spending sb 
+    JOIN cruise_bookings cb ON sb.booking_id = cb.booking_id
+    JOIN cruises c ON c.cruise_id = cb.cruise_id
+    GROUP BY c.ship_name) 
+    
+-- Aggregate
+SELECT 
+	bt.ship_name AS ship_name,
+    ROUND(bt.total_booking_revenue,0) AS total_booking_revenue,
+    ROUND(COALESCE(st.total_onboard_spend,0), 0) AS total_onboard_spend,
+    ROUND(bt.total_booking_revenue + (COALESCE(st.total_onboard_spend,0)),0) AS total_combined_revenue
+FROM booking_total bt 
+LEFT JOIN spending_total st ON bt.ship_name = st.ship_name
+
+
+-- Q2 Customer Segmentation
+
+WITH spending_total AS (
+	SELECT 
+        cs.customer_id,
+        SUM(os.amount) AS total_onboard_spend
+	FROM cruise_bookings AS c
+    JOIN onboard_spending os ON c.booking_id = os.booking_id 
+    JOIN customers cs ON c.customer_id = cs.customer_id
+    GROUP BY cs.customer_id),
+
+
+confirmed_bookings AS (
+	SELECT 
+		cs.customer_id,
+		COUNT(*) AS booking_count 
+	FROM cruise_bookings cb 
+    JOIN customers cs ON cb.customer_id = cs.customer_id
+    WHERE status = 'confirmed'
+    GROUP BY cs.customer_id) 
+    
+
+SELECT 
+	cb.customer_id,
+    c.full_name,
+    c.region,
+    cb.booking_count AS num_confirmed_bookings,
+    ROUND(coalesce(st.total_onboard_spend,0),0) AS total_onbaord_spend
+FROM confirmed_bookings cb
+LEFT JOIN customers c ON cb.customer_id = c.customer_id 
+LEFT JOIN spending_total st ON cb.customer_id = st.customer_id
+WHERE cb.booking_count >= 2 AND coalesce(st.total_onboard_spend,0) > 1000
+
+-- Modifying through subquery 
+
+SELECT 
+  cr.cruise_id,
+  cr.ship_name,
+  booking_stats.total_guests,
+  booking_stats.total_booking_revenue,
+  COALESCE(spend_stats.total_onboard_spend, 0) AS onboard_spend,
+  ROUND(cr.base_cost * booking_stats.total_guests, 2) AS total_cost,
+  ROUND(
+    booking_stats.total_booking_revenue 
+    + COALESCE(spend_stats.total_onboard_spend, 0)
+    - (cr.base_cost * booking_stats.total_guests), 2
+  ) AS profit
+
+FROM cruises cr
+
+-- Subquery 1: Booking revenue and guests per cruise
+JOIN (
+  SELECT 
+    cruise_id,
+    SUM(num_guests) AS total_guests,
+    SUM(total_price) AS total_booking_revenue
+  FROM cruise_bookings
+  GROUP BY cruise_id
+) AS booking_stats ON cr.cruise_id = booking_stats.cruise_id
+
+-- Subquery 2: Onboard spend per cruise
+LEFT JOIN (
+  SELECT 
+    cb.cruise_id,
+    SUM(os.amount) AS total_onboard_spend
+  FROM cruise_bookings cb
+  JOIN onboard_spending os ON cb.booking_id = os.booking_id
+  GROUP BY cb.cruise_id
+) AS spend_stats ON cr.cruise_id = spend_stats.cruise_id;
+
+
+
+-- Advanced Queries 
+
+WITH latest_booking AS (
+  SELECT 
+    customer_id,
+    MAX(booking_date) AS last_booking_date
+  FROM cruise_bookings
+  GROUP BY customer_id
+),
+
+total_spending AS (
+  SELECT 
+    cb.customer_id,
+    SUM(cb.total_price) + COALESCE(SUM(os.amount), 0) AS total_spent
+  FROM cruise_bookings cb
+  LEFT JOIN onboard_spending os ON cb.booking_id = os.booking_id
+  GROUP BY cb.customer_id
+),
+
+booking_counts AS (
+  SELECT 
+    customer_id,
+    COUNT(*) AS total_bookings
+  FROM cruise_bookings
+  GROUP BY customer_id
+)
+
+SELECT 
+  c.customer_id,
+
+  -- Display name using CONCAT, TRIM, SUBSTRING
+  CONCAT(
+    UPPER(TRIM(SUBSTRING_INDEX(c.full_name, ' ', -1))), ', ',
+    UPPER(TRIM(SUBSTRING_INDEX(c.full_name, ' ', 1)))
+  ) AS display_name,
+
+  -- Region tag using REGEXP
+  CASE
+    WHEN c.region REGEXP 'a$' THEN 'EndsWithA'
+    ELSE 'Other'
+  END AS region_tag,
+
+  c.loyalty_status,
+  bc.total_bookings,
+
+  -- Date difference
+  DATEDIFF(CURDATE(), lb.last_booking_date) AS days_since_last_booking,
+
+  -- Total revenue
+  ROUND(ts.total_spent, 2) AS total_spent,
+
+  -- Category by revenue using CASE
+  CASE 
+    WHEN ts.total_spent >= 5000 THEN 'High'
+    WHEN ts.total_spent >= 2000 THEN 'Medium'
+    ELSE 'Low'
+  END AS category,
+
+  -- Window function: rank by total spend
+  RANK() OVER (ORDER BY ts.total_spent DESC) AS spend_rank
+
+FROM customers c
+
+LEFT JOIN latest_booking lb ON c.customer_id = lb.customer_id
+LEFT JOIN total_spending ts ON c.customer_id = ts.customer_id
+LEFT JOIN booking_counts bc ON c.customer_id = bc.customer_id;
+
+			
